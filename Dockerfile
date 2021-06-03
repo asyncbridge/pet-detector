@@ -9,6 +9,7 @@ RUN pip3 install -U pip six numpy wheel setuptools mock future>=0.17.1 opencv-py
 
 RUN mkdir /workspace
 RUN mkdir /workspace/darknet
+RUN mkdir /workspace/darknet/weights
 ADD ./source/darknet /workspace/darknet
 WORKDIR /workspace/darknet
 RUN curl -o ./weights/yolov4.weights -LJO https://github.com/AlexeyAB/darknet/releases/download/darknet_yolo_v3_optimal/yolov4.weights
