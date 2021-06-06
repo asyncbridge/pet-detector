@@ -1,1 +1,1 @@
-docker run --runtime=nvidia -it -p 5004:5004 -v ${HOME}/experiments/darknet-data:/workspace/darknet/mydata aibakevision/mypet-detector:0.0.1
+docker run --runtime=nvidia -d -p 5005:5005 -v ${HOME}/experiments/darknet-data:/workspace/darknet/mydata --link=redis-store --env REDIS_HOST='localhost' --env REDIS_PORT=5004 --env REDIS_DB=0 aibakevision/mypet-detector:0.0.1

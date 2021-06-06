@@ -7,7 +7,17 @@ import darknet
 import argparse
 from threading import Thread, enumerate
 from queue import Queue
+import json
+import redis
+import pytz
+from datetime import date, datetime, timezone
+from tzlocal import get_localzone
 
+REDIS_HOST = os.environ.get('REDIS_HOST')
+REDIS_PORT = os.environ.get('REDIS_PORT')
+REDIS_DB = os.environ.get('REDIS_DB')
+
+redisDB = redis.StrictRedis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB)
 
 def parser():
     parser = argparse.ArgumentParser(description="YOLO Object Detection")
@@ -119,6 +129,77 @@ def video_capture(frame_queue, darknet_image_queue):
         darknet_image_queue.put(img_for_detect)
     cap.release()
 
+'''
+1. 검출된 사물중에 "bowl" label을 찾는다. 
+2. 찾은 bowl의 좌표(x,y,w,h)를 리스트에 저장한다.
+3. 만약 bowl개수가 2개가 아니면, 강아지가 그릇 하나를 가린것이고, 물 또는 사료는 먹는중이라 가정한다.
+4. 1280px 기준 600기준으로 left값을 비교하여 왼쪽이 물그릇, 오른쪽이 사료그릇으로 판단한다. 
+5. 판단한 그릇에 대해 redis에 오늘 날짜(2021-06-06)를 key로 가져온 후, 해당 데이터를 업데이트후 Set한다.
+   만약 없다면 바로 set한다.
+* 3번 케이스에서 frameㅊount를 체크해서 fps*5 후에도 여전히 유지 중이면 그때 업데이트한다. 
+'''
+startFlag = False
+frameCount = 0
+
+def checkBowls(fps, detections):
+    bowls = []
+       
+    for label, confidence, bbox in detections:
+        x, y, w, h = bbox
+
+        if label == 'bowl':
+           bowls.append(bbox) 
+
+    listSize = len(bowls)
+    width_half = 600
+
+    utc_dt = datetime.now(timezone.utc)
+    KST = pytz.timezone('Asia/Seoul')
+    today_date = utc_dt.astimezone(KST).strftime("%Y-%m-%d")
+    #print("date: "+today_date)
+
+    info = None
+
+    if redisDB.exists(today_date):
+       info = json.loads(redisDB.get(today_date))
+       print("data exists!")
+       print(info)
+
+    if listSize != 2:
+       global startFlag
+       global frameCount
+
+       if startFlag == False:
+          startFlag = True;
+          frameCount = 0
+
+       frameCount = frameCount + 1
+       #print(frameCount) 
+
+       if frameCount > fps*5:
+         #print("frameCount is done")
+         frameCount = 0
+         startFlag = False
+          
+         waterCnt = 0
+         foodCnt = 0
+         for item in bowls:
+            x, y, w, h = item
+  
+            if x < width_half: 
+               foodCnt = 1
+            elif x > width_half: 
+               waterCnt = 1
+      
+         print("redis set")
+
+         if info is None:
+            newOne = {"water":waterCnt, "food":foodCnt}
+            redisDB.set(today_date, json.dumps(newOne))       
+         else:
+            info['water'] = info['water'] + waterCnt
+            info['food'] = info['food'] + foodCnt
+            redisDB.set(today_date, json.dumps(info))   
 
 def inference(darknet_image_queue, detections_queue, fps_queue):
     while cap.isOpened():
@@ -127,10 +208,12 @@ def inference(darknet_image_queue, detections_queue, fps_queue):
         detections = darknet.detect_image(network, class_names, darknet_image, thresh=args.thresh)
         detections_queue.put(detections)
         fps = int(1/(time.time() - prev_time))
+        checkBowls(fps, detections)
         fps_queue.put(fps)
-        print("FPS: {}".format(fps))
-        darknet.print_detections(detections, args.ext_output)
+        #print("FPS: {}".format(fps))
+        #darknet.print_detections(detections, args.ext_output)
         darknet.free_image(darknet_image)
+       
     cap.release()
 
 
