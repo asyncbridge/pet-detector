@@ -134,14 +134,22 @@ def video_capture(frame_queue, darknet_image_queue):
 2. 찾은 bowl의 좌표(x,y,w,h)를 리스트에 저장한다.
 3. 만약 bowl개수가 2개가 아니면, 강아지가 그릇 하나를 가린것이고, 물 또는 사료는 먹는중이라 가정한다.
 4. 1280px 기준 600기준으로 left값을 비교하여 왼쪽이 물그릇, 오른쪽이 사료그릇으로 판단한다. 
-5. 판단한 그릇에 대해 redis에 오늘 날짜(2021-06-06)를 key로 가져온 후, 해당 데이터를 업데이트후 Set한다.
-   만약 없다면 바로 set한다.
-* 3번 케이스에서 frameㅊount를 체크해서 fps*5 후에도 여전히 유지 중이면 그때 업데이트한다. 
+5. 판단한 그릇에 대해 50 count 동안 물그릇과 밥그릇이 가려지는지 여부를 체크한다.  
+   redis에 temp key로 데이터를 가져온 후, 해당 데이터를 업데이트후(물그릇, 밥그릇 별 count)  Set한다.
+   만약 없다면 key를 추가한다.
+6. 여러번 중복 체크를 방지 하기 위해 2개의 bowl을 가리는 경우가 아닌경우(강아지가 그릇으로부터 떠났을경우),
+   frame count를 하여 500 count가 넘으면 자리를 비웠다 가정하고, temp 데이터에서 각가 물과 사료 먹은 count가 0보다 크면
+   +1 count를 수행하고 redis에 set한다.
 '''
 startFlag = False
 frameCount = 0
 
+frameCountStore = 0
+
 def checkBowls(fps, detections):
+
+    global frameCountStore
+
     bowls = []
        
     for label, confidence, bbox in detections:
@@ -160,10 +168,10 @@ def checkBowls(fps, detections):
 
     info = None
 
-    if redisDB.exists(today_date):
-       info = json.loads(redisDB.get(today_date))
-       print("data exists!")
-       print(info)
+    if redisDB.exists('temp'):
+       info = json.loads(redisDB.get('temp'))
+       #print("data exists!")
+       #print(info)
 
     if listSize != 2:
        global startFlag
@@ -176,8 +184,8 @@ def checkBowls(fps, detections):
        frameCount = frameCount + 1
        #print(frameCount) 
 
-       if frameCount > fps*5:
-         #print("frameCount is done")
+       if frameCount > 50:
+         print("frameCount is done")
          frameCount = 0
          startFlag = False
           
@@ -195,12 +203,63 @@ def checkBowls(fps, detections):
 
          if info is None:
             newOne = {"water":waterCnt, "food":foodCnt}
-            redisDB.set(today_date, json.dumps(newOne))       
+            store = json.dumps(newOne)
+            print(store)
+            redisDB.set("temp", store)      
+            frameCountStore = 0   
          else:
             info['water'] = info['water'] + waterCnt
             info['food'] = info['food'] + foodCnt
-            redisDB.set(today_date, json.dumps(info))   
+            store = json.dumps(info)
+            print(store)
+            redisDB.set("temp", store)
+            frameCountStore = 0
+    else:
+         frameCountStore = frameCountStore + 1
+         print("frameCountStore: "+str(frameCountStore))
 
+         if frameCountStore > 500: 
+            frameCountStore = 0 
+            print("frameCountStore is done!")
+ 
+            wcnt = 0
+            fcnt = 0
+
+            if info is not None:
+               wcnt = info['water']
+               fcnt = info['food']
+               info['water'] = 0
+               info['food'] = 0
+               redisDB.set("temp", json.dumps(info))
+
+            if redisDB.exists(today_date):
+               data = json.loads(redisDB.get(today_date)) 
+
+               if wcnt > 0:
+                  data['water'] = data['water'] + 1       
+    
+               if fcnt > 0:
+                  data['food'] = data['food'] + 1 
+               print("update today_date key")
+               store = json.dumps(data)
+               print(store)
+               redisDB.set(today_date, store)
+            else:
+               set_w = 0
+               set_f = 0
+
+               if wcnt > 0:
+                  set_w = 1
+
+               if fcnt > 0:
+                  set_f = 1         
+
+               print("update today_date key")
+               newOne = {"water":set_w, "food":set_f}
+               store = json.dumps(newOne)
+               print(store)
+               redisDB.set(today_date, store)
+            
 def inference(darknet_image_queue, detections_queue, fps_queue):
     while cap.isOpened():
         darknet_image = darknet_image_queue.get()
